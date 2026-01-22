@@ -7,6 +7,7 @@ import random
 class SimulatorConfig:
     duration_minutes: int = 1440  # one full day
     base_traffic: float = 100.0   # Mbps
+    num_days: int = 8
     peak_multiplier: float = 1.5
     event_multiplier: float = 5.0
     noise_floor_dbm: float = -104.0
@@ -27,7 +28,10 @@ class Urban5GSimulator:
 
     def is_event_time(self, t_min):
         # Example: event from 1080 to 1260 minutes (18:00 to 21:00)
-        return 1080 <= t_min <= 1260
+        day = t_min // self.config.duration_minutes
+        local_min = t_min % self.config.duration_minutes
+        event_start = 1080 + (day % 3) * 10
+        return event_start <= local_min <= event_start + 180
 
     def is_business_hour(self, t_min):
         hour = (t_min // 60) % 24
@@ -62,6 +66,7 @@ class Urban5GSimulator:
         return 10 * np.log10(sinr_linear)
 
     def step(self, t_min, agent_action_db=0):
+        day = t_min // self.config.duration_minutes
         self.tx_power = min(46, max(30, self.tx_power + agent_action_db))
         traffic = self.traffic_model(t_min)
         interference = self.interference_model(traffic, t_min)
@@ -69,6 +74,7 @@ class Urban5GSimulator:
         outage = sinr < self.config.sinr_threshold_db
 
         self.results.append({
+            "day": day,
             "minute": t_min,
             "traffic": traffic,
             "interference_dbm": interference,
@@ -79,7 +85,8 @@ class Urban5GSimulator:
         })
 
     def run(self, agent_fn=None):
-        for t in range(self.config.duration_minutes):
+        total_minutes = self.config.duration_minutes * self.config.num_days
+        for t in range(total_minutes):
             current_state = self.results[-1] if self.results else {}
             action = agent_fn(current_state) if agent_fn else 0
             self.step(t, action)
@@ -92,3 +99,5 @@ if __name__ == "__main__":
     sim.run(agent_fn=lambda state: 0)  # no agent, static power
     df = sim.to_dataframe()
     print(df.head())
+
+    df.to_csv("sim_resultados.csv", index=False)
