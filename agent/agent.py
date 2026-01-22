@@ -1,17 +1,20 @@
 import pandas as pd
 import openai
+from simulator.net_sim import Urban5GSimulator, SimulatorConfig
 
 class AgenticReActxApp:
     def __init__(self, config):
         self.config = config
         self.tx_power = 43  
-        self.results = []   
-    
-    # Setp 1. Data collection 
+        self.results = []  
+        self.simulator = Urban5GSimulator(config)  # Instanciando o simulador com a configuração
+
+    # Step 1. Data collection 
     def collect_data(self, t_min):
-        traffic = self.traffic_model(t_min)  
-        interference = self.interference_model(traffic, t_min)  
-        sinr = self.compute_sinr(interference, t_min)  
+        # Usando o simulador para obter as métricas
+        traffic = self.simulator.traffic_model(t_min)  # Obtendo o tráfego do simulador
+        interference = self.simulator.interference_model(traffic, t_min)  # Interferência
+        sinr = self.simulator.compute_sinr(interference, t_min)  # SINR
         return {
             'traffic': traffic,
             'interference': interference,
@@ -59,7 +62,8 @@ class AgenticReActxApp:
     
     # Step 5. Performance feedback
     def performance_feedback(self, action, t_min):
-        sinr = self.compute_sinr(self.interference_model(self.traffic_model(t_min), t_min), t_min)
+        # Usando a simulação para calcular o SINR e outros parâmetros
+        sinr = self.simulator.compute_sinr(self.simulator.interference_model(self.simulator.traffic_model(t_min), t_min), t_min)
         outage = sinr < self.config.sinr_threshold_db
         reward = 10 * (sinr - self.config.sinr_threshold_db) - abs(int(action.split("by")[1].split("dB")[0].strip())) * 2
         
