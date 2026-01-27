@@ -1,101 +1,79 @@
-import pandas as pd
-import openai
-from simulator.net_sim import Urban5GSimulator, SimulatorConfig
+import numpy as np
+from lstm_xapp.tool import LSTMForecastTool
+from simulator.net_sim import Urban5GSimulator
 
-class AgenticReActxApp:
-    def __init__(self, config):
-        self.config = config
-        self.tx_power = 43  
-        self.results = []  
-        self.simulator = Urban5GSimulator(config)  # Instanciando o simulador com a configuração
-
-    # Step 1. Data collection 
-    def collect_data(self, t_min):
-        # Usando o simulador para obter as métricas
-        traffic = self.simulator.traffic_model(t_min)  # Obtendo o tráfego do simulador
-        interference = self.simulator.interference_model(traffic, t_min)  # Interferência
-        sinr = self.simulator.compute_sinr(interference, t_min)  # SINR
-        return {
-            'traffic': traffic,
-            'interference': interference,
-            'sinr': sinr
-        }
-    
-    # Step 2 - Intelligent Analysis
-    def intelligent_analysis(self, data):
-        prompt = f"""
-        You are an Outage Mitigator agent for a 5G network. Your goal is to optimize the SINR while minimizing power usage.
-        Current data: Traffic: {data['traffic']} Mbps, Interference: {data['interference']} dBm, SINR: {data['sinr']} dB.
-        What action should you take to optimize SINR and avoid outage?
+class ReActAgent:
+    def __init__(self, simulator: Urban5GSimulator, lstm_tool: LSTMForecastTool):
         """
+        Inicializa o agente ReAct.
+        - simulator: Instância do simulador de rede
+        - lstm_tool: Instância do modelo LSTM para previsão de tráfego e SINR
+        """
+        self.simulator = simulator
+        self.lstm_tool = lstm_tool
+        self.tx_power_dbm = 30.0  # Inicialização da potência de transmissão
+
+    def observe(self):
+        """
+        Observa o estado atual da rede, coletando métricas do simulador.
+        """
+        # Coleta das métricas diretamente do simulador
+        kpis = {
+            'traffic': self.simulator.config.base_traffic,  # Exemplo: Tráfego base configurado no simulador
+            'interference_dbm': self.simulator.config.base_interference_dbm,  # Interferência base
+            'sinr_db': self.simulator.config.sinr_threshold_db,  # SINR baseado no threshold configurado
+            'tx_power_dbm': self.tx_power_dbm  # Potência de transmissão
+        }
+        return kpis
+
+    def think(self, kpis):
+        """
+        Processa as observações e gera uma previsão com base no LSTM.
+        - kpis: As métricas coletadas da rede.
+        """
+        forecast = self.lstm_tool.update_and_predict(kpis)
+        return forecast
+
+    def act(self, forecast):
+        """
+        Toma decisões de ação com base na previsão do LSTM.
+        Ajusta a potência de transmissão ou outros parâmetros com base nas previsões.
+        - forecast: Previsões geradas pelo LSTM para o futuro da rede.
+        """
+        if forecast:
+            final_action = self._adjust_tx_power_based_on_forecast(forecast)
+            self.tx_power_dbm = final_action
+
+    def _adjust_tx_power_based_on_forecast(self, forecast):
+        """
+        Ajusta a potência de transmissão com base nas previsões do LSTM.
+        - forecast: Previsão do LSTM (tráfego, SINR, etc.).
+        """
+        predicted_traffic = forecast.traffic_p50
+        predicted_sinr = forecast.sinr_p50
         
-        # LLM reasoning
-        response = openai.Completion.create(
-            engine="text-davinci-003",  # Exemplo
-            prompt=prompt,
-            max_tokens=100
-        )
-        
-        action = response.choices[0].text.strip() 
-        return action
-    
-    # Step 3. Tiered Decision Making
-    def tiered_decision(self, sinr):
-        if sinr < 15:  # γ1 = 15 dB
-            return "Tier 1: Increase power by 3 dB"
-        elif 15 <= sinr < 18:  # γ2 = 18 dB
-            return "Tier 2: Increase power by 2 dB"
-        elif 18 <= sinr < 20:  # γ3 = 20 dB
-            return "Tier 3: No change"
+        # Lógica simples para ajustar a potência com base nas previsões
+        if predicted_traffic > 50:
+            return min(46.0, self.tx_power_dbm + 2)  # Aumenta a potência se o tráfego previsto for alto
+        elif predicted_sinr < 10:
+            return max(30.0, self.tx_power_dbm - 2)  # Diminui a potência se o SINR previsto for baixo
         else:
-            return "Tier 4: Decrease power by 1 dB"
-    
-    # Step 4. Action implementation
-    def apply_action(self, action):
-        if "Increase" in action:
-            power_change = int(action.split("by")[1].split("dB")[0].strip())
-            self.tx_power = min(46, max(30, self.tx_power + power_change)) 
-        elif "Decrease" in action:
-            power_change = int(action.split("by")[1].split("dB")[0].strip())
-            self.tx_power = max(30, self.tx_power - power_change) 
-        return self.tx_power
-    
-    # Step 5. Performance feedback
-    def performance_feedback(self, action, t_min):
-        # Usando a simulação para calcular o SINR e outros parâmetros
-        sinr = self.simulator.compute_sinr(self.simulator.interference_model(self.simulator.traffic_model(t_min), t_min), t_min)
-        outage = sinr < self.config.sinr_threshold_db
-        reward = 10 * (sinr - self.config.sinr_threshold_db) - abs(int(action.split("by")[1].split("dB")[0].strip())) * 2
-        
-        return sinr, outage, reward
-    
-    # Run step
-    def run_step(self, t_min):
-        data = self.collect_data(t_min)  
-        action = self.intelligent_analysis(data) 
-        tier_action = self.tiered_decision(data['sinr'])
-        final_action = tier_action if action == "" else action
-        tx_power = self.apply_action(final_action) 
-        sinr, outage, reward = self.performance_feedback(final_action, t_min) 
-        return sinr, outage, reward, tx_power
-    
-    # Main loop
+            return self.tx_power_dbm  # Caso contrário, mantém a potência atual
+
     def run(self):
-        total_minutes = self.config.num_days * self.config.duration_minutes
-        for t in range(total_minutes):
-            current_state = self.results[-1] if self.results else {}
-            sinr, outage, reward, tx_power = self.run_step(t)  # Execute one timestep
-            self.results.append({
-                'minute': t % self.config.duration_minutes,
-                'day': t // self.config.duration_minutes,
-                'traffic': current_state.get('traffic', 0),
-                'sinr': sinr,
-                'tx_power': tx_power,
-                'outage': outage,
-                'action': final_action,
-                'reward': reward
-            })
-        
-    # Export results to a df
-    def to_dataframe(self):
-        return pd.DataFrame(self.results)
+        """
+        Executa o loop principal de observação, pensamento e ação.
+        """
+        for t in range(self.simulator.config.duration_minutes):
+            # 1. Observação: Coleta as métricas da rede
+            kpis = self.observe()
+
+            # 2. Pensamento: Faz a previsão usando o LSTM
+            forecast = self.think(kpis)
+
+            # 3. Ação: Ajusta a potência de transmissão ou outros parâmetros com base na previsão
+            self.act(forecast)
+
+            # Passa a ação para o simulador
+            self.simulator.step(tx_power_dbm=self.tx_power_dbm) # type: ignore
+
